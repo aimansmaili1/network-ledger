@@ -73,6 +73,11 @@
   .clearf{align-self:flex-start;background:none;border:none;color:var(--accent);font:500 12px var(--font-body);cursor:pointer;padding:2px 0;text-decoration:underline}
   .sync{font:400 11px var(--font-mono);color:var(--ink-faint);margin:auto 0 0}
 
+  /* connection banner */
+  .banner{display:none;padding:9px 15px;background:var(--overdue-soft);color:var(--overdue);font:500 12.5px var(--font-body);line-height:1.4;border-bottom:1px solid var(--border);text-align:center}
+  .banner.show{display:block}
+  .banner.ok{background:var(--due-soft);color:var(--due)}
+
   /* main head */
   .mhead{display:flex;align-items:center;gap:14px;padding:12px 15px;border-bottom:1px solid var(--border);background:var(--surface)}
   #search{flex:1;max-width:420px;font:400 13px var(--font-body);padding:8px 11px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--ink)}
@@ -192,6 +197,7 @@
 <div class="app">
   <aside class="rail" id="rail"></aside>
   <main class="main">
+    <div class="banner" id="banner" role="status"></div>
     <header class="mhead">
       <input id="search" type="search" placeholder="Search name, company, tag, notes…" autocomplete="off" aria-label="Search contacts">
       <div class="mh-r">
@@ -256,39 +262,79 @@
     return true;
   }
 
-  /* ---------- storage ---------- */
+  /* ---------- storage ----------
+     Contacts live in the cloud db. Two localStorage keys back that up so a
+     contact is never lost:
+       LS_PENDING  contacts saved while the cloud was unreachable — migrated
+                   up automatically the next time the cloud is available.
+       LS_MIRROR   a read-only copy of the whole cloud set after every sync,
+                   so a full backup always exists on this device.        */
+  var LS_PENDING="network-ledger-v1";      // kept name for backward compatibility
+  var LS_MIRROR="network-ledger-mirror";
+  function lsRead(key){try{var v=JSON.parse(localStorage.getItem(key));return Array.isArray(v)?v:[];}catch(e){return [];}}
+  function lsWrite(key,arr){try{localStorage.setItem(key,JSON.stringify(arr));}catch(e){}}
+  function contactKey(c){
+    return [c&&c.name,c&&c.company,c&&c.email].map(function(x){return String(x==null?"":x).trim().toLowerCase();}).join("|");
+  }
+  function stripId(c){var o={};for(var k in c){if(k!=="id"&&k!=="_local")o[k]=c[k];}return o;}
+
   function makeDbStore(db){
     var col=db.collection("contacts");
     return {
       mode:"cloud",
       subscribe:function(cb){
         return col.onSnapshot(function(snap){
-          cb(snap.docs.map(function(d){
+          var list=snap.docs.map(function(d){
             var src=d.data()||{},o={};
             for(var k in src){if(k!=="id")o[k]=src[k];}
             o.id=d.id;
             return o;
-          }));
+          });
+          lsWrite(LS_MIRROR,list);   // full backup on every sync
+          cb(list);
         },function(err){
           console.warn("db error",err);
-          toast("Sync issue ("+((err&&err.code)||"unknown")+")");
+          toast("Sync issue ("+((err&&err.code)||"unknown")+") — your data is safe, reload if the list looks wrong");
         });
       },
       upsert:function(c){
-        var body={};for(var k in c){if(k!=="id")body[k]=c[k];}
+        var body=stripId(c);
         body.updatedAt=new Date().toISOString();
         if(c.id){return col.doc(c.id).set(body).then(function(){return c.id;});}
         body.createdAt=body.updatedAt;
         return col.add(body).then(function(ref){return ref.id;});
       },
-      remove:function(id){return col.doc(id).delete();}
+      remove:function(id){return col.doc(id).delete();},
+      /* Push any contacts stranded in LS_PENDING up to the cloud, skipping
+         ones already there (matched on name+company+email). Resolves with
+         the number actually migrated. Never throws. */
+      migratePending:function(){
+        var pending=lsRead(LS_PENDING);
+        if(!pending.length)return Promise.resolve(0);
+        return col.get().then(function(snap){
+          var have={};
+          snap.docs.forEach(function(d){have[contactKey(d.data()||{})]=true;});
+          var todo=pending.filter(function(c){return !have[contactKey(c)];});
+          return todo.reduce(function(p,c){
+            return p.then(function(){
+              var body=stripId(c);
+              body.createdAt=body.createdAt||new Date().toISOString();
+              body.updatedAt=new Date().toISOString();
+              return col.add(body);
+            });
+          },Promise.resolve()).then(function(){
+            lsWrite(LS_PENDING,[]);   // only cleared after every add resolved
+            return todo.length;
+          });
+        }).catch(function(e){console.warn("migrate failed",e);return 0;});
+      }
     };
   }
+
   function makeLocalStore(){
-    var KEY="network-ledger-v1";
     var listeners=[];
-    function read(){try{return JSON.parse(localStorage.getItem(KEY))||[];}catch(e){return [];}}
-    function write(arr){try{localStorage.setItem(KEY,JSON.stringify(arr));}catch(e){}listeners.forEach(function(cb){cb(arr.slice());});}
+    function read(){return lsRead(LS_PENDING);}
+    function write(arr){lsWrite(LS_PENDING,arr);listeners.forEach(function(cb){cb(arr.slice());});}
     return {
       mode:"local",
       subscribe:function(cb){listeners.push(cb);cb(read());return function(){listeners=listeners.filter(function(l){return l!==cb;});};},
@@ -296,11 +342,11 @@
         var arr=read(),now=new Date().toISOString(),id=c.id;
         if(id){
           var i=-1;for(var j=0;j<arr.length;j++){if(arr[j].id===id){i=j;break;}}
-          var merged={};for(var k in c)merged[k]=c[k];merged.updatedAt=now;
+          var merged=stripId(c);merged.id=id;merged.updatedAt=now;merged.createdAt=c.createdAt||now;
           if(i>=0)arr[i]=merged;else arr.push(merged);
         }else{
-          id="c_"+Math.random().toString(36).slice(2,10);
-          var nw={};for(var k2 in c)nw[k2]=c[k2];nw.id=id;nw.createdAt=now;nw.updatedAt=now;
+          id="c_"+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+          var nw=stripId(c);nw.id=id;nw.createdAt=now;nw.updatedAt=now;
           arr.push(nw);
         }
         write(arr);
@@ -309,13 +355,22 @@
       remove:function(id){write(read().filter(function(x){return x.id!==id;}));return Promise.resolve();}
     };
   }
+
   function initStore(){
-    return Promise.resolve().then(function(){
-      if(window.claude && typeof window.claude.use==="function"){
-        return window.claude.use("db").then(function(db){return db?makeDbStore(db):makeLocalStore();},function(){return makeLocalStore();});
-      }
-      return makeLocalStore();
-    }).catch(function(){return makeLocalStore();});
+    if(!(window.claude&&typeof window.claude.use==="function"))return Promise.resolve(makeLocalStore());
+    var tries=0;
+    function attempt(){
+      tries++;
+      return window.claude.use("db").then(function(db){
+        if(db)return makeDbStore(db);
+        if(tries<3)return new Promise(function(r){setTimeout(r,1500);}).then(attempt);
+        return makeLocalStore();
+      },function(){
+        if(tries<3)return new Promise(function(r){setTimeout(r,1500);}).then(attempt);
+        return makeLocalStore();
+      });
+    }
+    return attempt().catch(function(){return makeLocalStore();});
   }
 
   /* ---------- render ---------- */
@@ -518,7 +573,16 @@
       closeDrawer();
       toast(c.id?"Contact updated":"Contact added");
     }).catch(function(err){
-      var m="Could not save: "+((err&&(err.message||err.code))||err);
+      // Cloud write failed — stash a copy on-device so it is never lost and
+      // gets auto-synced on a later load.
+      if(!c.id){
+        try{
+          var pend=lsRead(LS_PENDING);
+          pend.push(stripId(c));
+          lsWrite(LS_PENDING,pend);
+        }catch(e){}
+      }
+      var m="Couldn’t reach the cloud — saved a copy on this device, it will sync automatically later.";
       if(msg){msg.textContent=m;msg.classList.add("err");}
       toast(m);
       if(btn){btn.disabled=false;btn.textContent="Save";}
@@ -650,12 +714,28 @@
   $("#search").addEventListener("input",function(e){filters.q=e.target.value.trim();renderBody();updateCount();});
 
   /* ---------- boot ---------- */
+  function setBanner(text,kind){
+    var b=document.getElementById("banner");if(!b)return;
+    if(!text){b.className="banner";b.textContent="";return;}
+    b.textContent=text;
+    b.className="banner show"+(kind==="ok"?" ok":"");
+  }
   render();
   initStore().then(function(s){
     store=s;
     syncMode=s.mode;
     syncLabel=s.mode==="cloud"?"☁  Synced to the cloud":"▲  Local to this browser only";
     s.subscribe(function(list){contacts=list.slice();render();});
+    if(s.mode==="local"){
+      setBanner("⚠ Not connected to your cloud database. Contacts you add now are saved only on this device and will sync automatically once you reconnect — don’t clear this browser’s data.");
+    }else if(s.migratePending){
+      s.migratePending().then(function(n){
+        if(n>0){
+          setBanner("✓ Recovered "+n+" contact"+(n===1?"":"s")+" that were stranded on this device and synced them to the cloud.","ok");
+          setTimeout(function(){setBanner("");},8000);
+        }
+      });
+    }
   });
 })();
 </script>
