@@ -259,7 +259,12 @@
       mode:"cloud",
       subscribe:function(cb){
         return col.onSnapshot(function(snap){
-          cb(snap.docs.map(function(d){var o=d.data()||{};o.id=d.id;return o;}));
+          cb(snap.docs.map(function(d){
+            var src=d.data()||{},o={};
+            for(var k in src){if(k!=="id")o[k]=src[k];}
+            o.id=d.id;
+            return o;
+          }));
         },function(err){
           console.warn("db error",err);
           toast("Sync issue ("+((err&&err.code)||"unknown")+")");
@@ -407,9 +412,9 @@
         var id=ev.dataTransfer.getData("text/plain");
         var st=cb.dataset.stage;
         var c=null;for(var i=0;i<contacts.length;i++){if(contacts[i].id===id){c=contacts[i];break;}}
-        if(c&&c.stage!==st){
+        if(c&&c.stage!==st&&store){
           var updated={};for(var k in c)updated[k]=c[k];updated.stage=st;
-          Promise.resolve(store.upsert(updated)).catch(function(){toast("Could not move contact");});
+          Promise.resolve().then(function(){return store.upsert(updated);}).catch(function(){toast("Could not move contact");});
         }
       });
     });
@@ -494,19 +499,23 @@
   function saveFromForm(){
     var c=collectForm();
     var msg=$("#formmsg");
+    if(msg){msg.textContent="";msg.classList.remove("err");}
     if(!c.name){if(msg){msg.textContent="Name is required.";msg.classList.add("err");}var nm=$("#f_name");if(nm)nm.focus();return Promise.resolve();}
+    if(!store){if(msg){msg.textContent="Still connecting to your data — try again in a moment.";msg.classList.add("err");}return Promise.resolve();}
     var btn=$('#drawer .btn.primary');
     if(btn){btn.disabled=true;btn.textContent="Saving…";}
-    return Promise.resolve(store.upsert(c)).then(function(){
+    return Promise.resolve().then(function(){return store.upsert(c);}).then(function(){
       closeDrawer();
       toast(c.id?"Contact updated":"Contact added");
     }).catch(function(err){
-      if(msg){msg.textContent="Could not save: "+((err&&err.message)||err);msg.classList.add("err");}
+      var m="Could not save: "+((err&&(err.message||err.code))||err);
+      if(msg){msg.textContent=m;msg.classList.add("err");}
+      toast(m);
       if(btn){btn.disabled=false;btn.textContent="Save";}
     });
   }
   function deleteFromForm(){
-    if(!drawer.data.id)return Promise.resolve();
+    if(!drawer.data.id||!store)return Promise.resolve();
     if(!window.confirm("Remove "+(drawer.data.name||"this contact")+" from your ledger? This can’t be undone."))return Promise.resolve();
     return Promise.resolve(store.remove(drawer.data.id)).then(function(){
       closeDrawer();toast("Contact removed");
