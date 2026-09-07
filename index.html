@@ -582,7 +582,7 @@
       '</div>'+
       '<div class="drawer-foot">'+
         (mode==="edit"?'<button class="btn danger" data-act="drawer-delete" type="button">Delete</button>':'<span></span>')+
-        '<div class="foot-r"><button class="btn" data-act="drawer-cancel" type="button">Cancel</button><button class="btn primary" data-act="drawer-save" type="button">Save</button></div>'+
+        '<div class="foot-r"><button class="btn" data-act="drawer-cancel" type="button">Cancel</button><button class="btn primary" data-act="drawer-save" type="button" title="Ctrl+Enter">Save</button></div>'+
       '</div>';
   }
   function openDrawer(mode,data,opts){
@@ -777,7 +777,11 @@
   });
   document.getElementById("drawer").addEventListener("input",function(){scheduleDraftSave();});
   window.addEventListener("beforeunload",function(){if(drawer.open&&drawer.mode==="create")saveDraft();});
-  document.addEventListener("keydown",function(e){if(e.key==="Escape"&&drawer.open)closeDrawer();});
+  document.addEventListener("keydown",function(e){
+    if(!drawer.open)return;
+    if(e.key==="Escape"){closeDrawer();return;}
+    if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();saveFromForm();}
+  });
   $("#search").addEventListener("input",function(e){filters.q=e.target.value.trim();renderBody();updateCount();});
 
   /* ---------- boot ---------- */
