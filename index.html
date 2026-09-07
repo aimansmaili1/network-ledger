@@ -158,6 +158,10 @@
   .drawer input:focus,.drawer select:focus,.drawer textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
   .form-msg{font:400 12px var(--font-body);color:var(--ink-muted);margin:6px 0 0;min-height:1.1em}
   .form-msg.err{color:var(--overdue)}
+  .paste-box{display:flex;flex-direction:column;gap:6px;padding:11px;margin-bottom:14px;border:1px dashed var(--border-strong);border-radius:9px;background:var(--surface)}
+  .paste-row{display:flex;align-items:center;gap:9px}
+  .paste-msg{font:400 11.5px var(--font-body);color:var(--ink-muted);line-height:1.35}
+  .paste-msg.err{color:var(--overdue)}
   .drawer-foot{display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--border)}
   .foot-r{display:flex;gap:8px;margin-left:auto}
 
@@ -445,6 +449,12 @@
     return ''+
       '<div class="drawer-head"><span class="lbl">'+(mode==="edit"?"Edit contact":"New contact")+'</span><button class="icon" data-act="drawer-cancel" aria-label="Close">✕</button></div>'+
       '<div class="drawer-body">'+
+        (mode==="edit"?"":
+          '<div class="paste-box">'+
+            '<span class="lbl">Paste from LinkedIn (optional)</span>'+
+            '<textarea id="f_paste" rows="3" placeholder="Open the profile, select the page text, copy it, paste here — then Extract."></textarea>'+
+            '<div class="paste-row"><button class="btn ghost sm" data-act="extract-linkedin" type="button">Extract</button><span class="paste-msg" id="pastemsg"></span></div>'+
+          '</div>')+
         field("name","Name",c.name,"text","Jane Doe")+
         '<div class="row2">'+field("role","Role / title",c.role)+field("company","Company",c.company)+'</div>'+
         '<div class="row2">'+field("industry","Industry",c.industry,"text","e.g. Private equity")+field("location","Location",c.location,"text","e.g. London")+'</div>'+
@@ -530,6 +540,80 @@
     if(msg){msg.classList.remove("err");msg.textContent="Marked as contacted today, next follow-up in ~30 days. Adjust and Save.";}
   }
 
+  var samplePromise=null;
+  function getSample(){
+    if(!samplePromise){
+      samplePromise=(window.claude&&typeof window.claude.use==="function")
+        ? window.claude.use("sample").catch(function(){return null;})
+        : Promise.resolve(null);
+    }
+    return samplePromise;
+  }
+  function extractFromLinkedIn(){
+    var ta=document.getElementById("f_paste");
+    var msg=document.getElementById("pastemsg");
+    var btn=document.querySelector('#drawer [data-act="extract-linkedin"]');
+    if(!ta)return;
+    var raw=(ta.value||"").trim();
+    if(msg){msg.classList.remove("err");msg.textContent="";}
+    if(!raw){if(msg){msg.classList.add("err");msg.textContent="Paste the profile text first.";}return;}
+    if(/^https?:\/\/\S+$/i.test(raw)&&raw.toLowerCase().indexOf("linkedin.com")>-1){
+      var li=document.getElementById("f_linkedin");
+      if(li&&!li.value)li.value=raw;
+      if(msg)msg.textContent="Saved the URL to the LinkedIn field. Now paste the profile TEXT here to fill name, company, role…";
+      return;
+    }
+    if(msg)msg.textContent="Reading the profile…";
+    if(btn){btn.disabled=true;btn.textContent="Reading…";}
+    getSample().then(function(sample){
+      if(!sample){var err=new Error("unavailable");err.code="not_granted";throw err;}
+      var text=raw.length>6000?raw.slice(0,6000):raw;
+      var prompt=
+        "The text below was copied from a LinkedIn profile page. Extract the person's details.\n"+
+        'Reply with ONLY a JSON object of exactly this shape, using "" for anything not present:\n'+
+        '{"name":"","role":"","company":"","location":"","industry":"","linkedin":"","summary":""}\n'+
+        "- role = current job title only, without the company name.\n"+
+        "- company = current employer.\n"+
+        '- industry = a short sector label if inferable (e.g. "Private equity", "SaaS"), else "".\n'+
+        '- linkedin = a linkedin.com/in/... URL if one appears in the text, else "".\n'+
+        "- summary = a 1-2 sentence plain-text digest (headline + focus) for CRM notes.\n\n"+
+        "TEXT:\n"+text;
+      return sample.json(prompt,{modelTier:"quick"});
+    }).then(function(d){
+      d=d||{};
+      var filled=[];
+      var setIf=function(id,val,label){
+        var el=document.getElementById("f_"+id);
+        if(el&&val&&!String(el.value).trim()){el.value=String(val).trim();filled.push(label);}
+      };
+      setIf("name",d.name,"name");
+      setIf("role",d.role,"role");
+      setIf("company",d.company,"company");
+      setIf("location",d.location,"location");
+      setIf("industry",d.industry,"industry");
+      setIf("linkedin",d.linkedin,"LinkedIn");
+      if(d.summary){
+        var nt=document.getElementById("f_notes");
+        if(nt){nt.value=nt.value?(nt.value.replace(/\s*$/,"")+"\n\n"+String(d.summary).trim()):String(d.summary).trim();filled.push("notes");}
+      }
+      if(msg){
+        msg.classList.remove("err");
+        msg.textContent=filled.length?("Filled "+filled.join(", ")+" — check the fields and Save."):"Couldn't pick out any fields — try copying more of the profile page.";
+      }
+      if(btn){btn.disabled=false;btn.textContent="Extract";}
+    }).catch(function(e){
+      var code=e&&e.code;
+      var m=(code==="not_granted"||code==="sampling_disabled"||code==="not_declared"||code==="capability_disabled"||code==="capability_removed")
+        ? "Claude extraction isn't available here — fill the fields manually."
+        : code==="rate_limited" ? "Claude is busy right now — try again in a moment."
+        : code==="invalid_json" ? "Couldn't read that text as a profile — try copying more of the page."
+        : code==="prompt_too_large" ? "That's a lot of text — paste just the top of the profile."
+        : "Extraction failed ("+((e&&(e.message||e.code))||"unknown")+").";
+      if(msg){msg.classList.add("err");msg.textContent=m;}
+      if(btn){btn.disabled=false;btn.textContent="Extract";}
+    });
+  }
+
   function toast(text){
     var host=$("#toasts");if(!host)return;
     var el=document.createElement("div");el.className="toast";el.textContent=text;
@@ -560,6 +644,7 @@
     if(a==="drawer-save"){saveFromForm();return;}
     if(a==="drawer-delete"){deleteFromForm();return;}
     if(a==="log-touch"){logTouch();return;}
+    if(a==="extract-linkedin"){extractFromLinkedIn();return;}
   });
   document.addEventListener("keydown",function(e){if(e.key==="Escape"&&drawer.open)closeDrawer();});
   $("#search").addEventListener("input",function(e){filters.q=e.target.value.trim();renderBody();updateCount();});

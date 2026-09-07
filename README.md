@@ -15,6 +15,11 @@ pipeline, log touchpoints, and never lose sight of who needs a follow-up.
 - **Follow-up tracking** — overdue dates flagged red, due-today amber; one click to
   "log a touch today" and schedule the next one.
 - **Filters** — by stage, relationship strength, follow-ups due, and full-text search.
+- **Paste from LinkedIn** — on a new contact, paste the text copied from a LinkedIn
+  profile and click *Extract*; Claude (via the artifact `sample` capability) fills in
+  name, role, company, location, industry, and a notes summary. Falls back to manual
+  entry when Claude isn't available. Pasting just a URL only stores the URL — the
+  sandbox can't fetch LinkedIn.
 
 ## Running it
 
