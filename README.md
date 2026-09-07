@@ -20,6 +20,12 @@ pipeline, log touchpoints, and never lose sight of who needs a follow-up.
   name, role, company, location, industry, and a notes summary. Falls back to manual
   entry when Claude isn't available. Pasting just a URL only stores the URL — the
   sandbox can't fetch LinkedIn.
+- **Autosaved draft** — while you fill in a new contact, every keystroke is saved to
+  this browser (`localStorage` key `network-ledger-draft`). Close the panel, reload,
+  come back hours later — the form reopens exactly where you left off, with a
+  *"Restored your unsaved draft"* banner and a *Discard* link. The draft is cleared
+  when you save the contact or discard it, and expires after 30 days. New contacts only;
+  editing an existing contact never touches the draft.
 
 ## Running it
 

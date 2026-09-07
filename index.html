@@ -163,6 +163,8 @@
   .drawer input:focus,.drawer select:focus,.drawer textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
   .form-msg{font:400 12px var(--font-body);color:var(--ink-muted);margin:6px 0 0;min-height:1.1em}
   .form-msg.err{color:var(--overdue)}
+  .draft-note{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 11px;margin-bottom:12px;border-radius:8px;background:var(--accent-soft);color:var(--accent-ink);font:500 12px var(--font-body)}
+  .linklike{background:none;border:none;color:var(--accent-ink);font:600 12px var(--font-body);text-decoration:underline;cursor:pointer;padding:0}
   .paste-box{display:flex;flex-direction:column;gap:6px;padding:11px;margin-bottom:14px;border:1px dashed var(--border-strong);border-radius:9px;background:var(--surface)}
   .paste-row{display:flex;align-items:center;gap:9px}
   .paste-msg{font:400 11.5px var(--font-body);color:var(--ink-muted);line-height:1.35}
@@ -489,6 +491,53 @@
     el.textContent=n===contacts.length?(n+" contact"+(n===1?"":"s")):(n+" of "+contacts.length);
   }
 
+  /* ---------- new-contact draft (autosaved to this browser) ---------- */
+  var DRAFT_KEY="network-ledger-draft";
+  var DRAFT_MAX_AGE=30*24*60*60*1000;
+  var DRAFT_IDS=["name","company","role","email","linkedin","phone","industry","location","howMet","notes","lastContact","nextFollowUp","tags","stage","strength","paste"];
+  var DRAFT_TEXT_IDS=["name","company","role","email","linkedin","phone","industry","location","howMet","notes","tags","paste"];
+  var draftTimer=null;
+  function currentFormValues(){
+    var o={};
+    DRAFT_IDS.forEach(function(id){var el=document.getElementById("f_"+id);if(el)o[id]=el.value;});
+    return o;
+  }
+  function draftHasContent(v){
+    if(!v)return false;
+    for(var i=0;i<DRAFT_TEXT_IDS.length;i++){if(String(v[DRAFT_TEXT_IDS[i]]||"").trim())return true;}
+    return false;
+  }
+  function readDraft(){
+    try{
+      var o=JSON.parse(localStorage.getItem(DRAFT_KEY));
+      if(!o||!o.v)return null;
+      if(o.at&&(Date.now()-o.at)>DRAFT_MAX_AGE){clearDraft();return null;}
+      return o.v;
+    }catch(e){return null;}
+  }
+  function clearDraft(){try{localStorage.removeItem(DRAFT_KEY);}catch(e){}}
+  function saveDraft(){
+    if(drawer.mode!=="create"||!drawer.open)return;
+    var v=currentFormValues();
+    if(draftHasContent(v)){
+      try{localStorage.setItem(DRAFT_KEY,JSON.stringify({v:v,at:Date.now()}));}catch(e){}
+    }else{
+      clearDraft();
+    }
+  }
+  function scheduleDraftSave(){
+    if(drawer.mode!=="create"||!drawer.open)return;
+    if(draftTimer)clearTimeout(draftTimer);
+    draftTimer=setTimeout(saveDraft,200);
+  }
+  function applyDraftValues(v){
+    DRAFT_IDS.forEach(function(id){
+      if(v[id]==null)return;
+      var el=document.getElementById("f_"+id);
+      if(el)el.value=v[id];
+    });
+  }
+
   /* ---------- drawer ---------- */
   function field(id,label,val,type,ph){
     return '<label class="field"><span class="lbl">'+label+'</span><input id="f_'+id+'" type="'+(type||"text")+'" value="'+esc(val||"")+'" placeholder="'+esc(ph||"")+'"></label>';
@@ -504,6 +553,8 @@
     return ''+
       '<div class="drawer-head"><span class="lbl">'+(mode==="edit"?"Edit contact":"New contact")+'</span><button class="icon" data-act="drawer-cancel" aria-label="Close">✕</button></div>'+
       '<div class="drawer-body">'+
+        (mode==="edit"?"":
+          '<div class="draft-note" id="draftnote" hidden><span>Restored your unsaved draft — pick up where you left off.</span><button class="linklike" data-act="discard-draft" type="button">Discard</button></div>')+
         (mode==="edit"?"":
           '<div class="paste-box">'+
             '<span class="lbl">Paste from LinkedIn (optional)</span>'+
@@ -534,7 +585,7 @@
         '<div class="foot-r"><button class="btn" data-act="drawer-cancel" type="button">Cancel</button><button class="btn primary" data-act="drawer-save" type="button">Save</button></div>'+
       '</div>';
   }
-  function openDrawer(mode,data){
+  function openDrawer(mode,data,opts){
     drawer.mode=mode;drawer.open=true;
     var base=data?data:freshContact();
     var copy={};for(var k in base)copy[k]=base[k];
@@ -544,9 +595,19 @@
     d.classList.add("open");d.setAttribute("aria-hidden","false");
     $("#scrim").classList.add("open");
     var tg=$("#f_tags");if(tg)tg.value=(drawer.data.tags||[]).join(", ");
+    if(mode==="create"&&!(opts&&opts.skipDraft)){
+      var dr=readDraft();
+      if(dr&&draftHasContent(dr)){
+        applyDraftValues(dr);
+        var note=document.getElementById("draftnote");
+        if(note)note.hidden=false;
+      }
+    }
     var nm=$("#f_name");if(nm)nm.focus();
   }
   function closeDrawer(){
+    if(draftTimer){clearTimeout(draftTimer);draftTimer=null;}
+    saveDraft();          // flush the in-progress draft before closing
     drawer.open=false;
     var d=$("#drawer");
     d.classList.remove("open");d.setAttribute("aria-hidden","true");
@@ -571,6 +632,7 @@
     if(btn){btn.disabled=true;btn.textContent="Saving…";}
     return Promise.resolve().then(function(){return store.upsert(c);}).then(function(){
       closeDrawer();
+      if(!c.id)clearDraft();   // after closeDrawer so its flush can't re-write it
       toast(c.id?"Contact updated":"Contact added");
     }).catch(function(err){
       // Cloud write failed — stash a copy on-device so it is never lost and
@@ -602,6 +664,7 @@
     if(nf&&(!nf.value||nf.value<=t))nf.value=addDays(t,30);
     var msg=$("#formmsg");
     if(msg){msg.classList.remove("err");msg.textContent="Marked as contacted today, next follow-up in ~30 days. Adjust and Save.";}
+    saveDraft();
   }
 
   var samplePromise=null;
@@ -664,6 +727,7 @@
         msg.classList.remove("err");
         msg.textContent=filled.length?("Filled "+filled.join(", ")+" — check the fields and Save."):"Couldn't pick out any fields — try copying more of the profile page.";
       }
+      if(filled.length)saveDraft();
       if(btn){btn.disabled=false;btn.textContent="Extract";}
     }).catch(function(e){
       var code=e&&e.code;
@@ -709,7 +773,10 @@
     if(a==="drawer-delete"){deleteFromForm();return;}
     if(a==="log-touch"){logTouch();return;}
     if(a==="extract-linkedin"){extractFromLinkedIn();return;}
+    if(a==="discard-draft"){clearDraft();openDrawer("create",null,{skipDraft:true});return;}
   });
+  document.getElementById("drawer").addEventListener("input",function(){scheduleDraftSave();});
+  window.addEventListener("beforeunload",function(){if(drawer.open&&drawer.mode==="create")saveDraft();});
   document.addEventListener("keydown",function(e){if(e.key==="Escape"&&drawer.open)closeDrawer();});
   $("#search").addEventListener("input",function(e){filters.q=e.target.value.trim();renderBody();updateCount();});
 
