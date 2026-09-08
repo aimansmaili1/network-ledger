@@ -5,3 +5,8 @@ desktop.ini
 *.swp
 .vscode/
 .idea/
+
+# Secrets (never commit these)
+config.js
+.env
+.env.local
