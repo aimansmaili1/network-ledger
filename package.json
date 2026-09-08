@@ -1,0 +1,16 @@
+{
+  "name": "network-ledger",
+  "version": "0.2.0",
+  "description": "A personal CRM for nurturing LBS networking contacts",
+  "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.3"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "dev": "python -m http.server 3000"
+  }
+}

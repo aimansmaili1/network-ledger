@@ -167,6 +167,18 @@
   .linklike{background:none;border:none;color:var(--accent-ink);font:600 12px var(--font-body);text-decoration:underline;cursor:pointer;padding:0}
   .paste-box{display:flex;flex-direction:column;gap:6px;padding:11px;margin-bottom:14px;border:1px dashed var(--border-strong);border-radius:9px;background:var(--surface)}
   .paste-row{display:flex;align-items:center;gap:9px}
+  .action-row{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  .action-row .btn{flex:1;min-width:140px}
+
+  /* whatsapp modal */
+  .whatsapp-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center}
+  .whatsapp-modal.show{display:flex}
+  .whatsapp-content{background:var(--surface-raised);border-radius:12px;padding:20px;max-width:400px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:12px}
+  .whatsapp-header{font:600 14px var(--font-body);color:var(--ink)}
+  .whatsapp-message{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:12px;font:400 13px var(--font-body);color:var(--ink);min-height:60px;word-wrap:break-word;line-height:1.5}
+  .whatsapp-message.loading{color:var(--ink-muted);text-align:center}
+  .whatsapp-footer{display:flex;gap:10px}
+  .whatsapp-footer .btn{flex:1}
   .paste-msg{font:400 11.5px var(--font-body);color:var(--ink-muted);line-height:1.35}
   .paste-msg.err{color:var(--overdue)}
   .drawer-foot{display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--border)}
@@ -215,6 +227,17 @@
 </div>
 <div class="scrim" id="scrim" data-act="drawer-cancel"></div>
 <aside class="drawer" id="drawer" aria-hidden="true" aria-label="Contact details"></aside>
+<div class="whatsapp-modal" id="whatsapp-modal" aria-hidden="true">
+  <div class="whatsapp-content">
+    <div class="whatsapp-header">Draft WhatsApp Message</div>
+    <div class="whatsapp-message" id="whatsapp-text">Generating…</div>
+    <div class="whatsapp-footer">
+      <button class="btn" data-act="whatsapp-close">Close</button>
+      <button class="btn primary" data-act="whatsapp-copy">Copy to clipboard</button>
+    </div>
+  </div>
+</div>
+
 <div id="toasts"></div>
 
 <script>
@@ -575,7 +598,7 @@
           '<label class="field"><span class="lbl">Last contact</span><input id="f_lastContact" type="date" value="'+esc(c.lastContact||"")+'"></label>'+
           '<label class="field"><span class="lbl">Next follow-up</span><input id="f_nextFollowUp" type="date" value="'+esc(c.nextFollowUp||"")+'"></label>'+
         '</div>'+
-        '<button class="btn ghost sm" data-act="log-touch" type="button">✓ Log a touch today</button>'+
+        '<div class="action-row"><button class="btn ghost sm" data-act="log-touch" type="button">✓ Log a touch today</button><button class="btn ghost sm" data-act="draft-whatsapp" type="button">✉️ Draft WhatsApp</button></div>'+
         field("tags","Tags (comma-separated)","","text","vc, mentor, hiring, cohort")+
         area("notes","Notes & comments",c.notes,"What they care about, what you discussed, your next ask…")+
         '<p class="form-msg" id="formmsg"></p>'+
@@ -750,6 +773,54 @@
     setTimeout(function(){el.classList.remove("in");setTimeout(function(){el.remove();},220);},2600);
   }
 
+  /* ---------- whatsapp draft ---------- */
+  function draftWhatsApp(){
+    if(!drawer.data.name){toast("Please save the contact first.");return;}
+    var modal=document.getElementById("whatsapp-modal");
+    var msgEl=document.getElementById("whatsapp-text");
+    if(!modal||!msgEl)return;
+    msgEl.className="whatsapp-message loading";
+    msgEl.textContent="Generating…";
+    modal.classList.add("show");
+    modal.setAttribute("aria-hidden","false");
+    var payload={
+      name:drawer.data.name,
+      company:drawer.data.company||"",
+      howMet:drawer.data.howMet||"",
+      lastContact:drawer.data.lastContact||"",
+      notes:drawer.data.notes||""
+    };
+    fetch("/api/ai/draft-whatsapp",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)
+    }).then(function(r){return r.json();}).then(function(d){
+      if(!msgEl)return;
+      msgEl.className="whatsapp-message";
+      msgEl.textContent=d.message||"(No message generated)";
+    }).catch(function(e){
+      if(!msgEl)return;
+      msgEl.className="whatsapp-message";
+      msgEl.textContent="Error: "+e.message;
+    });
+  }
+  function closeWhatsAppModal(){
+    var modal=document.getElementById("whatsapp-modal");
+    if(!modal)return;
+    modal.classList.remove("show");
+    modal.setAttribute("aria-hidden","true");
+  }
+  function copyWhatsAppText(){
+    var msgEl=document.getElementById("whatsapp-text");
+    if(!msgEl)return;
+    var text=msgEl.textContent;
+    navigator.clipboard.writeText(text).then(function(){
+      toast("Copied to clipboard!");
+    }).catch(function(){
+      toast("Copy failed — try selecting and copying manually.");
+    });
+  }
+
   /* ---------- events ---------- */
   document.addEventListener("click",function(e){
     var el=e.target.closest("[data-act]");if(!el)return;
@@ -774,6 +845,9 @@
     if(a==="log-touch"){logTouch();return;}
     if(a==="extract-linkedin"){extractFromLinkedIn();return;}
     if(a==="discard-draft"){clearDraft();openDrawer("create",null,{skipDraft:true});return;}
+    if(a==="draft-whatsapp"){draftWhatsApp();return;}
+    if(a==="whatsapp-close"){closeWhatsAppModal();return;}
+    if(a==="whatsapp-copy"){copyWhatsAppText();return;}
   });
   document.getElementById("drawer").addEventListener("input",function(){scheduleDraftSave();});
   window.addEventListener("beforeunload",function(){if(drawer.open&&drawer.mode==="create")saveDraft();});
