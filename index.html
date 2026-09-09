@@ -148,8 +148,12 @@
   .empty.small{color:var(--ink-faint);font:400 13px var(--font-body)}
 
   /* drawer */
-  .drawer{position:fixed;top:0;right:0;height:100dvh;width:min(452px,100vw);background:var(--surface-raised);box-shadow:var(--shadow-drawer);transform:translateX(101%);transition:transform .22s ease;display:flex;flex-direction:column;z-index:50}
+  .drawer{position:fixed;top:0;right:0;height:100dvh;width:min(452px,100vw);background:var(--surface-raised);box-shadow:var(--shadow-drawer);transform:translateX(101%);transition:transform .22s ease;display:flex;flex-direction:column;z-index:50;overflow:hidden}
   .drawer.open{transform:none}
+  @media(max-width:452px){
+    .drawer{width:100vw;max-width:100vw}
+    .drawer-body{overflow-y:auto;-webkit-overflow-scrolling:touch}
+  }
   .scrim{position:fixed;inset:0;background:rgba(15,12,9,.34);opacity:0;pointer-events:none;transition:opacity .2s;z-index:49}
   .scrim.open{opacity:1;pointer-events:auto}
   .drawer-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
@@ -240,6 +244,17 @@
 </div>
 
 <div id="toasts"></div>
+
+<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--paper);z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:20px;">
+  <div style="text-align:center;max-width:400px;">
+    <h2 style="font:600 28px var(--font-display);margin:0 0 10px;">Network Ledger</h2>
+    <p style="font:400 13px var(--font-body);color:var(--ink-muted);margin:0 0 30px;">Sign in to access your contacts</p>
+    <button id="google-signin" class="btn primary wide" style="width:100%;margin-bottom:10px;">🔗 Sign in with Google</button>
+    <div style="margin:20px 0;display:flex;align-items:center;gap:10px;"><div style="flex:1;height:1px;background:var(--border);"></div><span style="font:400 12px var(--font-body);color:var(--ink-faint);">OR</span><div style="flex:1;height:1px;background:var(--border);"></div></div>
+    <div style="display:flex;gap:10px;margin-bottom:10px;"><input id="magic-email" type="email" placeholder="your@email.com" style="flex:1;font:400 13px var(--font-body);padding:8px 11px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--ink);"><button id="magic-signin" class="btn primary">Send link</button></div>
+    <p id="auth-message" style="font:400 12px var(--font-body);color:var(--ink-muted);margin:0;min-height:1.2em;"></p>
+  </div>
+</div>
 
 <script>
 (function(){
@@ -382,21 +397,102 @@
     };
   }
 
+  // Supabase initialization
+  var supabase=null;
+  var currentUser=null;
+  function initSupabase(){
+    try{
+      var url=window.VITE_SUPABASE_URL;
+      var key=window.VITE_SUPABASE_ANON_KEY;
+      if(!url||!key){console.warn("Supabase config missing");return null;}
+      supabase=window.supabase.createClient(url,key);
+      return supabase;
+    }catch(e){console.error("Supabase init failed:",e);return null;}
+  }
+
+  function makeSupabaseStore(){
+    var listeners=[];
+    function notify(list){listeners.forEach(function(cb){cb(list);});}
+    var col=supabase.from("contacts");
+    var data=[];
+
+    // Load initial data
+    col.select("*").eq("user_id",currentUser.id).order("created_at",{ascending:false}).then(function(res){
+      if(res.error){console.error("Load error:",res.error);return;}
+      data=res.data||[];
+      notify(data.slice());
+    });
+
+    // Subscribe to real-time changes
+    supabase.channel("contacts:"+currentUser.id).on("postgres_changes",{event:"*",schema:"public",table:"contacts",filter:"user_id=eq."+currentUser.id},function(payload){
+      if(payload.eventType==="INSERT"&&!data.find(function(c){return c.id===payload.new.id;})){data.unshift(payload.new);}
+      else if(payload.eventType==="UPDATE"){var i=data.findIndex(function(c){return c.id===payload.new.id;});if(i>=0)data[i]=payload.new;}
+      else if(payload.eventType==="DELETE"){data=data.filter(function(c){return c.id!==payload.old.id;});}
+      notify(data.slice());
+    }).subscribe();
+
+    return {
+      mode:"cloud",
+      subscribe:function(cb){listeners.push(cb);cb(data.slice());return function(){listeners=listeners.filter(function(l){return l!==cb;});};},
+      upsert:function(c){
+        var body={};for(var k in c)if(k!=="id")body[k]=c[k];
+        body.user_id=currentUser.id;
+        body.updated_at=new Date().toISOString();
+        if(c.id){
+          return col.update(body).eq("id",c.id).then(function(res){if(res.error)throw res.error;return c.id;});
+        }
+        body.created_at=new Date().toISOString();
+        return col.insert([body]).then(function(res){if(res.error)throw res.error;return res.data[0].id;});
+      },
+      remove:function(id){return col.delete().eq("id",id).then(function(res){if(res.error)throw res.error;});}
+    };
+  }
+
+  function showLoginScreen(){
+    var screen=document.getElementById("auth-screen");
+    if(!screen)return;
+    screen.style.display="flex";
+    document.getElementById("google-signin").onclick=function(){
+      supabase.auth.signInWithOAuth({provider:"google",options:{redirectTo:window.location.origin}});
+    };
+    document.getElementById("magic-signin").onclick=function(){
+      var email=document.getElementById("magic-email").value.trim();
+      if(!email)return;
+      supabase.auth.signInWithOtp({email:email,options:{emailRedirectTo:window.location.origin}}).then(function(){
+        document.getElementById("auth-message").textContent="✓ Check your email!";
+      }).catch(function(e){document.getElementById("auth-message").textContent="Error: "+e.message;});
+    };
+  }
+
+  function hideLoginScreen(){
+    var screen=document.getElementById("auth-screen");
+    if(screen)screen.style.display="none";
+  }
+
   function initStore(){
-    if(!(window.claude&&typeof window.claude.use==="function"))return Promise.resolve(makeLocalStore());
-    var tries=0;
-    function attempt(){
-      tries++;
-      return window.claude.use("db").then(function(db){
-        if(db)return makeDbStore(db);
-        if(tries<3)return new Promise(function(r){setTimeout(r,1500);}).then(attempt);
-        return makeLocalStore();
-      },function(){
-        if(tries<3)return new Promise(function(r){setTimeout(r,1500);}).then(attempt);
-        return makeLocalStore();
-      });
+    if(!supabase){
+      if(!(window.claude&&typeof window.claude.use==="function"))return Promise.resolve(makeLocalStore());
+      var tries=0;
+      function attempt(){
+        tries++;
+        return window.claude.use("db").then(function(db){
+          if(db)return makeDbStore(db);
+          if(tries<3)return new Promise(function(r){setTimeout(r,1500);}).then(attempt);
+          return makeLocalStore();
+        },function(){
+          if(tries<3)return new Promise(function(r){setTimeout(r,1500);}).then(attempt);
+          return makeLocalStore();
+        });
+      }
+      return attempt().catch(function(){return makeLocalStore();});
     }
-    return attempt().catch(function(){return makeLocalStore();});
+    // Supabase is available, check auth
+    return supabase.auth.getUser().then(function(res){
+      currentUser=res.data.user;
+      if(!currentUser){showLoginScreen();return makeLocalStore();}
+      hideLoginScreen();
+      return makeSupabaseStore();
+    }).catch(function(){showLoginScreen();return makeLocalStore();});
   }
 
   /* ---------- render ---------- */
@@ -866,6 +962,8 @@
     b.textContent=text;
     b.className="banner show"+(kind==="ok"?" ok":"");
   }
+  // Initialize Supabase with environment variables from Vercel
+  initSupabase();
   render();
   initStore().then(function(s){
     store=s;
@@ -883,5 +981,13 @@
       });
     }
   });
+  // Listen for auth changes (sign in, sign out)
+  if(supabase){
+    supabase.auth.onAuthStateChange(function(event,session){
+      currentUser=session?session.user:null;
+      if(currentUser){hideLoginScreen();window.location.reload();}
+      else{showLoginScreen();window.location.reload();}
+    });
+  }
 })();
 </script>
